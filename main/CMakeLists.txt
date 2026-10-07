@@ -1,2 +1,14 @@
-idf_component_register(SRCS "embedded-sensor-hub.c"
-                    INCLUDE_DIRS ".")
+idf_component_register(
+    SRCS
+        "embedded-sensor-hub.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        bmp280
+        mpu6050
+        sht30
+        ssd1306
+        esp_driver_i2c
+        freertos
+        esp_driver_gpio
+)
