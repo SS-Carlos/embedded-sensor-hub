@@ -1,6 +1,11 @@
 idf_component_register(
     SRCS
         "embedded-sensor-hub.c"
+        "bmp280_task.c"
+        "mpu6050_task.c"
+        "sht30_task.c"
+        "display_task.c"
+        "rtc_task.c"
     INCLUDE_DIRS
         "."
     REQUIRES
@@ -8,7 +13,9 @@ idf_component_register(
         mpu6050
         sht30
         ssd1306
+        ds3231
         esp_driver_i2c
         freertos
         esp_driver_gpio
+        esp_timer
 )

@@ -1,22 +1,14 @@
 # Embedded Sensor Hub for ESP32-C6
 
-Integrated IoT system combining multiple I2C sensors, OLED display,
-RTC timestamp and FreeRTOS multitask architecture, running on
-ESP32-C6 (RISC-V RV32 architecture).
+Multi-sensor IoT node running on the ESP32-C6 (RISC-V). Three sensors and a
+real-time clock share a single I2C bus, each handled by its own FreeRTOS task,
+and a paged OLED interface shows the data live together with a sensor health
+page.
 
 Built on top of the bare-metal drivers from
 [i2c-driver-bare-metal-esp32](https://github.com/SS-Carlos/i2c-driver-bare-metal-esp32)
 and the FreeRTOS architecture from
 [freertos-sensor-tasks](https://github.com/SS-Carlos/freertos-sensor-tasks).
-
-## Multi-Architecture Support
-
-Same codebase running on both architectures:
-
-| Repository | Chip | Architecture | Toolchain |
-|---|---|---|---|
-| i2c-driver-bare-metal-esp32 | ESP32-D0WDQ6 | Xtensa LX6 | xtensa-esp32-elf |
-| embedded-sensor-hub | ESP32-C6 MAN16 | RISC-V RV32 | riscv32-esp-elf |
 
 ## Status
 
@@ -25,68 +17,115 @@ Same codebase running on both architectures:
 | BMP280 — temperature and pressure | ✅ Working |
 | MPU6050 — accelerometer and gyroscope | ✅ Working |
 | SHT30 — temperature and humidity | ✅ Working |
-| SSD1306 OLED — real-time data display | ✅ Working |
-| DS3231 RTC — timestamp | 🚧 In progress |
-| FreeRTOS I2C manager task pattern | 📋 Planned |
+| DS3231 — real-time clock | ✅ Working |
+| SSD1306 OLED — paged UI | ✅ Working |
+| Sensor health page | ✅ Working |
+| I2C manager task pattern | 📋 Planned |
+| MicroSD data logger (SPI) | 📋 Planned |
 
-## Components
+## Architecture
 
 ```
-components/
-├── bmp280/     — temperature and pressure (Bosch BMP280)
-├── mpu6050/    — accelerometer and gyroscope (InvenSense MPU6050)
-├── sht30/      — temperature and humidity (Sensirion SHT30)
-├── ssd1306/    — 128x64 OLED display driver (Solomon SSD1306)
-│   ├── include/
-│   │   ├── ssd1306_types.h  — commands, dimensions, config struct
-│   │   ├── ssd1306.h        — public API
-│   │   └── font_5x8.h       — ASCII font bitmap (5x7 in 5x8 cell)
-│   └── src/
-│       └── ssd1306.c        — framebuffer, I2C communication, text rendering
-└── ds3231/     — RTC timestamp (Maxim DS3231) — in progress
+bmp280_task  ──┐
+mpu6050_task ──┤                         ┌────────────────┐
+sht30_task   ──┼──► data_queue ────────► │  display_task  │──► SSD1306
+rtc_task     ──┘   (sensor_message_t)    └────────────────┘
+
+All tasks take i2c_mutex before touching the shared I2C bus.
 ```
 
-## SSD1306 Driver Features
+- **One producer task per sensor.** Each task reads its sensor under the I2C
+  mutex and sends a `sensor_message_t` to a shared queue.
+- **One consumer.** `display_task` drains the queue, keeps the latest value of
+  each sensor in a cache and redraws the screen at a fixed rate.
+- **Every message carries the result of the last transaction** (`esp_err_t`),
+  which feeds the health page.
+- A task that finds the bus busy skips its cycle instead of reporting a sensor
+  error, so a congested bus does not look like a failed sensor.
 
-- Framebuffer-based rendering — full 128×64 pixel control
-- Text rendering with 5x8 ASCII font (95 characters)
-- Hardware pixel addressing using page-based memory layout
-- `ssd1306_draw_pixel` — individual pixel control with bitmask operations
-- `ssd1306_draw_char` / `ssd1306_draw_string` — text at any page position
-- `ssd1306_fill` / `ssd1306_clear` — display control
-- Verified on ESP32-C6 with `i2c_master_probe` for device detection
+## OLED interface
+
+A fixed header shows the time from the DS3231 and the current page. The pages
+rotate automatically every 4 seconds:
+
+| Page | Content |
+|---|---|
+| 1 | SHT30 — temperature and humidity |
+| 2 | BMP280 — pressure and temperature |
+| 3 | MPU6050 — acceleration (X, Y, Z) |
+| 4 | Sensor health |
+
+## Sensor health page
+
+Each producer task attaches the result of its last I2C transaction to every
+message, and the display task turns that into a per-sensor state. A sensor that
+responds normally is shown as healthy; transaction errors, corrupted data
+(CRC mismatch on the SHT30) and sensors that stop responding are reported
+separately.
 
 ## Hardware
 
-- ESP32-C6 MAN16 (RISC-V RV32, single core 160MHz, 16MB flash)
-- BMP280 — I2C address 0x76
-- MPU6050 GY-521 — I2C address 0x68
-- SHT30 — I2C address 0x44
-- SSD1306 OLED 128x64 — I2C address 0x3C
-- SDA → GPIO 6 / SCL → GPIO 7
+| Device | I2C address | Notes |
+|---|---|---|
+| SSD1306 OLED 128x64 | 0x3C | SA0 to GND |
+| DS3231 RTC | 0x68 | Fixed address |
+| MPU6050 (GY-521) | 0x69 | AD0 to VCC, moved from 0x68 to avoid the DS3231 |
+| BMP280 | 0x76 | SDO to GND |
+| SHT30 | 0x44 | ADDR to GND |
 
-## ESP32-C6 Notes
+- Board: ESP32-C6 MAN16 (RISC-V RV32, single core 160 MHz, 16 MB flash)
+- SDA → GPIO 6 / SCL → GPIO 7 (shared bus)
 
-The ESP32-C6 requires specific I2C configuration compared to the
-classic ESP32:
+## ESP32-C6 notes
+
+The C6 needs a slightly different I2C setup than the classic ESP32:
 
 ```c
 i2c_master_bus_config_t bus_cfg = {
-    .glitch_ignore_cnt            = 0,    // must be 0 on C6
+    .glitch_ignore_cnt            = 0,    // 0 on the C6
     .flags.enable_internal_pullup = true,
 };
 
-// Use i2c_master_probe() for device detection — not i2c_master_receive()
+// Device detection with i2c_master_probe()
 esp_err_t ret = i2c_master_probe(bus_handle, addr, pdMS_TO_TICKS(20));
 ```
 
-A 500ms startup delay is required before initializing I2C devices.
+A 500 ms delay before initializing the bus gives the devices time to power up.
+
+## Project structure
+
+```
+embedded-sensor-hub/
+├── components/
+│   ├── bmp280/     — Bosch BMP280 driver
+│   ├── mpu6050/    — InvenSense MPU6050 driver
+│   ├── sht30/      — Sensirion SHT30 driver (CRC-8 verified)
+│   ├── ds3231/     — Maxim DS3231 RTC driver
+│   └── ssd1306/    — SSD1306 OLED driver (framebuffer + 5x8 font)
+└── main/
+    ├── embedded-sensor-hub.c  — bus init, sensor init, task launch
+    ├── sensor_types.h         — shared message and parameter structs
+    ├── *_task.c/h             — one producer task per sensor
+    └── display_task.c/h       — queue consumer and UI
+```
+
+## Validation
+
+Tested with all five devices on one bus. Continuous operation: XX h without
+failures. Bus signals were inspected with a logic analyzer (PulseView/sigrok).
+
+## Roadmap
+
+- I2C manager task: a single task that owns the bus and serves requests from
+  the others via queue
+- Button to change page manually
+- MicroSD data logger over SPI with RTC timestamps
 
 ## References
 
 - [SSD1306 Datasheet](https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf)
 - [DS3231 Datasheet](https://datasheets.maximintegrated.com/en/ds/DS3231.pdf)
-- [ESP-IDF v6 Documentation](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c6/)
+- [ESP-IDF v6 Documentation (ESP32-C6)](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c6/)
 - [i2c-driver-bare-metal-esp32](https://github.com/SS-Carlos/i2c-driver-bare-metal-esp32)
 - [freertos-sensor-tasks](https://github.com/SS-Carlos/freertos-sensor-tasks)
 

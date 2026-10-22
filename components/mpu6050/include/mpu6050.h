@@ -28,7 +28,7 @@
 
 // MPU6050 Default Config
 #define MPU6050_DEFAULT_CONFIG {             \
-  .i2c_addr    = MPU6050_I2C_ADDR_PRIMARY,  \
+  .i2c_addr    = MPU6050_I2C_ADDR_SECONDARY,  \
   .accel_range = MPU6050_ACCEL_RANGE_2G,    \
   .gyro_range  = MPU6050_GYRO_RANGE_250,    \
   .dlpf_config = MPU6050_DLPF_44HZ,         \
